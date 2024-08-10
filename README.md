@@ -1,1 +1,1 @@
-# LATSS-Locker-Anti-Theft-Security-System-
+# LATSS-Locker-Anti-Theft-Security-System
