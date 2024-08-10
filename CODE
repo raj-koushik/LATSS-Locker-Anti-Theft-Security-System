@@ -1,0 +1,298 @@
+
+
+#define CAMERA_MODEL_AI_THINKER
+
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include "esp_camera.h"
+#include <ArduinoJson.h>
+#include "camera_pins.h"
+#include "camera_code.h"
+#include <FS.h>
+#include <SPIFFS.h>
+#include "SPI.h"
+#include "driver/rtc_io.h"
+
+
+
+// Wifi network station credentials
+#define WIFI_SSID "project"
+#define WIFI_PASSWORD "project1234"
+// Telegram BOT Token (Get from Botfather)
+#define BOT_TOKEN "5388873550:AAHaCAgnFnIVRqR-QGgXJfaL60YYCCNmcmE"
+String CHAT_ID = "1355785588";
+#define FLASH_LED_PIN 4
+
+const unsigned long BOT_MTBS = 100; // mean time between scan messages
+
+unsigned long bot_lasttime; // last time messages' scan has been done
+
+WiFiClientSecure secured_client;
+UniversalTelegramBot bot(BOT_TOKEN, secured_client);
+
+
+bool flashState = LOW;
+
+camera_fb_t *fb = NULL;
+
+bool isMoreDataAvailable();
+byte *getNextBuffer();
+int getNextBufferLen();
+
+bool dataAvailable = false;
+String incomingdata;
+String rsenvalue;
+int sendbit;
+#define FILE_PHOTO "/photo.jpg"
+
+String test_photo_url = "https://www.arduino.cc/en/uploads/Trademark/ArduinoCommunityLogo.png";
+
+void handleNewMessages(int numNewMessages)
+{
+  Serial.println("handleNewMessages");
+  Serial.println(String(numNewMessages));
+
+  for (int i = 0; i < numNewMessages; i++)
+  {
+    String chat_id = String(bot.messages[i].chat_id);
+    String text = bot.messages[i].text;
+
+    Serial.print("---CHAT ID:");Serial.println(chat_id);Serial.println(text);
+   
+
+    String from_name = bot.messages[i].from_name;
+    if (from_name == "")
+      from_name = "Guest";
+
+    if (text == "/flash")
+    {
+      flashState = !flashState;
+      digitalWrite(FLASH_LED_PIN, flashState);
+    }
+
+    if (text == "/photo")
+    {
+      fb = NULL;
+      // Take Picture with Camera
+      fb = esp_camera_fb_get();
+      if (!fb)
+      {
+        Serial.println("Camera capture failed");
+        bot.sendMessage(chat_id, "Camera capture failed", "");
+        return;
+      }
+      dataAvailable = true;
+      Serial.println("Sending");
+      bot.sendPhotoByBinary(chat_id, "image/jpeg", fb->len,isMoreDataAvailable, nullptr,getNextBuffer, getNextBufferLen);
+
+      Serial.println("done!");
+
+      esp_camera_fb_return(fb);
+    }
+
+    if (text == "/start")
+    {
+      String welcome = "Welcome to the ESP32Cam Telegram bot.\n\n";
+      welcome += "/photo : will take a photo\n";
+      welcome += "/flash : toggle flash LED (VERY BRIGHT!)\n";
+      bot.sendMessage(chat_id, welcome, "Markdown");
+    }
+  }
+}
+
+bool isMoreDataAvailable()
+{
+  if (dataAvailable)
+  {
+    dataAvailable = false;
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+byte *getNextBuffer()
+{
+  if (fb)
+  {
+    return fb->buf;
+  }
+  else
+  {
+    return nullptr;
+  }
+}
+
+int getNextBufferLen()
+{
+  if (fb)
+  {
+    return fb->len;
+  }
+  else
+  {
+    return 0;
+  }
+}
+
+///////////////////////////////// SETUP /////////////////////////////////////
+
+void setup()
+{
+  Serial.begin(9600);
+  Serial.println();
+
+  pinMode(FLASH_LED_PIN, OUTPUT);
+  digitalWrite(FLASH_LED_PIN, flashState); //defaults to low
+
+  if (!setupCamera())
+  {
+    Serial.println("Camera Setup Failed!");
+    while (true)
+    {
+      delay(100);
+    }
+  }
+
+  // attempt to connect to Wifi network:
+  Serial.print("Connecting to Wifi SSID ");
+  Serial.print(WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  secured_client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.print("\nWiFi connected. IP address: ");
+  Serial.println(WiFi.localIP());
+
+  delay(1000);
+  photsend(); 
+
+}
+
+
+
+
+
+void loop()
+{
+// if (Serial.available() > 0) {
+//    incomingdata = Serial.readString();
+//    Serial.print("Read:"); Serial.println(incomingdata);
+//    incomingdata.trim();
+//    if (incomingdata.startsWith("#")) {
+//      Serial.print(" ASH  CAME");
+//      Serial.println(incomingdata);
+//      incomingdata.remove(0, 1);
+//      Serial.print("AFTER REMOVE UPDATE INCOMING DATA:");   Serial.println(incomingdata);
+//      sendbit=incomingdata.toInt();
+//      if(sendbit==1){
+//        Serial.println("Preparing photo");
+//        photsend(); 
+//      }
+//    
+//    }
+//  
+//}
+
+delay(100);
+}
+
+
+
+bool checkPhoto( fs::FS &fs ) {
+  File f_pic = fs.open( FILE_PHOTO );
+  unsigned int pic_sz = f_pic.size();
+  return ( pic_sz > 100 );
+}
+
+// Capture Photo and Save it to SPIFFS
+void capturePhotoSaveSpiffs( void ) {
+  camera_fb_t * fb = NULL; // pointer
+  bool ok = 0; // Boolean indicating if the picture has been taken correctly
+
+  do {
+    // Take a photo with the camera
+    Serial.println("Taking a photo...");
+
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      return;
+    }
+
+    // Photo file name
+    Serial.printf("Picture file name: %s\n", FILE_PHOTO);
+    File file = SPIFFS.open(FILE_PHOTO, FILE_WRITE);
+
+    // Insert the data in the photo file
+    if (!file) {
+      Serial.println("Failed to open file in writing mode");
+    }
+    else {
+      file.write(fb->buf, fb->len); // payload (image), payload length
+      Serial.print("The picture has been saved in ");
+      Serial.print(FILE_PHOTO);
+      Serial.print(" - Size: ");
+      Serial.print(file.size());
+      Serial.println(" bytes");
+    }
+    // Close the file
+    file.close();
+    esp_camera_fb_return(fb);
+
+    // check if file has been correctly saved in SPIFFS
+    ok = checkPhoto(SPIFFS);
+  } while ( !ok );
+}
+
+
+void photsend(){
+    Serial.println("--------------------  TAKE PHOTO AND SEND  -----------------");
+    flashlighton();
+    delay(1000);
+    //capturePhotoSaveSpiffs();
+    delay(1000);
+    //sendPhotoTelegram();
+    takephotoandsend();
+    delay(1000);
+    flashlightoff();
+  }
+
+void sendPhotoTelegram(){
+   String response = bot.sendPhoto(CHAT_ID, test_photo_url, "This photo was sent using URL");
+}
+
+
+void takephotoandsend(){
+      fb = NULL;
+      // Take Picture with Camera
+      fb = esp_camera_fb_get();
+      if (!fb)
+      {
+        Serial.println("Camera capture failed");
+        bot.sendMessage(CHAT_ID, "Camera capture failed", "");
+        return;
+      }
+      dataAvailable = true;
+      Serial.println("Sending");
+      bot.sendPhotoByBinary(CHAT_ID, "image/jpeg", fb->len,isMoreDataAvailable, nullptr,getNextBuffer, getNextBufferLen);
+   
+      
+
+      Serial.println("done!");
+      esp_camera_fb_return(fb);
+}
+
+void flashlighton(){
+  digitalWrite(FLASH_LED_PIN, HIGH);
+}
+
+void flashlightoff(){
+  digitalWrite(FLASH_LED_PIN, LOW);
+}
